@@ -20,6 +20,11 @@ static_resources:
                 codec_type: AUTO
                 stat_prefix: ext_proc_ingress_http
                 proxy_status_config: {}
+                stream_idle_timeout: 0s
+                request_timeout: 0s
+                common_http_protocol_options:
+                  idle_timeout: 0s
+                  max_stream_duration: 0s
                 access_log:
                   - name: file-logger-access-logs-http-connection-manager
                     typed_config:
@@ -58,12 +63,13 @@ static_resources:
                       # route_cache_action: RETAIN
                       mutation_rules:
                         allow_all_routing: true
-                      # allow_mode_override: true
+                      allow_mode_override: true
+                      send_body_without_waiting_for_header_response: false
                       processing_mode:
                         request_header_mode: SEND
                         response_header_mode: SEND
-                        request_trailer_mode: SKIP
-                        response_trailer_mode: SKIP
+                        # request_trailer_mode: SKIP
+                        # response_trailer_mode: SKIP
                         request_body_mode: BUFFERED
                         response_body_mode: BUFFERED
                       message_timeout:
@@ -113,6 +119,29 @@ static_resources:
                           route:
                             append_x_forwarded_host: true
                             cluster: netty
+                          # typed_per_filter_config:
+                          #   envoy.filters.http.ext_proc:
+                          #     "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                          #     overrides:
+                          #       processing_mode:
+                          #         request_header_mode: SEND
+                          #         # response_header_mode: SEND
+                          #         # request_body_mode: STREAMED # BUFFERED STREAMED FULL_DUPLEX_STREAMED NONE
+                          #         # response_body_mode: STREAMED # BUFFERED STREAMED FULL_DUPLEX_STREAMED
+                          #         # request_trailer_mode: SKIP
+                          #         # response_trailer_mode: SKIP
+                        - name: post_/v1/chat/completions
+                          match:
+                            prefix: "/v1/chat/completions"
+                            headers:
+                              - name: ":method"
+                                string_match:
+                                  exact: "POST"
+                          route:
+                            cluster: openai_cluster
+                            host_rewrite_literal: api.openai.com
+                            timeout: 0s
+                            idle_timeout: 0s
                           typed_per_filter_config:
                             envoy.filters.http.ext_proc:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
@@ -120,11 +149,31 @@ static_resources:
                                 processing_mode:
                                   request_header_mode: SEND
                                   response_header_mode: SEND
-                                  request_body_mode: STREAMED # BUFFERED STREAMED FULL_DUPLEX_STREAMED NONE
-                                  response_body_mode: STREAMED # BUFFERED STREAMED FULL_DUPLEX_STREAMED
+                                  request_body_mode: FULL_DUPLEX_STREAMED
+                                  response_body_mode: FULL_DUPLEX_STREAMED
                                   request_trailer_mode: SKIP
                                   response_trailer_mode: SKIP
-    
+                        - name: get_/sse-test
+                          match:
+                            prefix: "/sse-test"
+                          route:
+                            cluster: sse_dev_cluster
+                            prefix_rewrite: "/test"
+                            host_rewrite_literal: sse.dev
+                            timeout: 0s
+                            idle_timeout: 0s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              overrides:
+                                processing_mode:
+                                  request_header_mode: SEND
+                                  response_header_mode: SEND
+                                  request_body_mode: NONE
+                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_trailer_mode: SKIP
+                                  response_trailer_mode: SKIP
+
     - name: non_ext_proc_ingress_listener
       address:
         socket_address:
@@ -210,3 +259,42 @@ static_resources:
                   address: host.docker.internal
                   # address: ext-proc
                   port_value: 9001
+    - name: openai_cluster
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      dns_lookup_family: V4_ONLY
+      load_assignment:
+        cluster_name: openai_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: api.openai.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: api.openai.com
+    - name: sse_dev_cluster
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      dns_lookup_family: V4_ONLY
+      per_connection_buffer_limit_bytes: 2
+      load_assignment:
+        cluster_name: sse_dev_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: sse.dev
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: sse.dev

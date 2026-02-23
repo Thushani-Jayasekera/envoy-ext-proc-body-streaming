@@ -17,7 +17,7 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/external-processor-full-duplix-stream",
+            "program": "${workspaceFolder}/external-processor-full-duplex-stream",
             "args": ["-write_data_to_file"],
         }
     ]

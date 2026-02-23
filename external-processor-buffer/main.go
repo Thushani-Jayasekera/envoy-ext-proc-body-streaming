@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	ext_procv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	ext_proc_v3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	pb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -20,27 +21,6 @@ import (
 var write_data_to_file *bool
 
 var _ ext_proc_v3.ExternalProcessorServer = &server{}
-
-var new_req_body []byte
-var new_req_body_chunks [][]byte
-
-var new_resp_body []byte
-var new_resp_body_chunks [][]byte
-
-const CHUNK_SIZE = 1 << 20 // 1 MiB = 1048576 bytes
-
-func splitIntoChunks(data []byte) [][]byte {
-	var chunks [][]byte
-	for len(data) > 0 {
-		end := CHUNK_SIZE
-		if len(data) < CHUNK_SIZE {
-			end = len(data)
-		}
-		chunks = append(chunks, data[:end])
-		data = data[end:]
-	}
-	return chunks
-}
 
 type server struct {
 }
@@ -101,9 +81,9 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 				Response: &pb.ProcessingResponse_RequestHeaders{},
 				ModeOverride: &ext_procv3.ProcessingMode{
 					RequestTrailerMode:  ext_procv3.ProcessingMode_SKIP,
-					RequestBodyMode:     ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
+					RequestBodyMode:     ext_procv3.ProcessingMode_BUFFERED,
 					ResponseHeaderMode:  ext_procv3.ProcessingMode_SEND,
-					ResponseBodyMode:    ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
+					ResponseBodyMode:    ext_procv3.ProcessingMode_BUFFERED,
 					ResponseTrailerMode: ext_procv3.ProcessingMode_SKIP,
 				},
 			}
@@ -123,34 +103,32 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 				}
 			}
 
-			if value.RequestBody.EndOfStream {
-				log.Info().Msg("Request Body EOF ****************************************************************************************")
-				log.Info().Msgf("Updating file with new content. Length: %v", len(new_req_body))
-
-				for i, _ := range new_req_body_chunks {
-
-					// Response for FULL_DUPLEX_STREAMED
-					resp := &pb.ProcessingResponse{
-						Response: &pb.ProcessingResponse_RequestBody{
-							RequestBody: &pb.BodyResponse{
-								Response: &pb.CommonResponse{
-									BodyMutation: &pb.BodyMutation{
-										Mutation: &pb.BodyMutation_StreamedResponse{
-											StreamedResponse: &pb.StreamedBodyResponse{
-												Body:        new_req_body_chunks[i],
-												EndOfStream: i == len(new_req_body_chunks)-1,
-											},
+			resp := &pb.ProcessingResponse{
+				Response: &pb.ProcessingResponse_RequestBody{
+					RequestBody: &pb.BodyResponse{
+						Response: &pb.CommonResponse{
+							BodyMutation: &pb.BodyMutation{
+								Mutation: &pb.BodyMutation_Body{
+									Body: []byte("<http><body><h1>Request Body Replaced by External Processor</h1></body></html>"),
+								},
+							},
+							HeaderMutation: &pb.HeaderMutation{
+								SetHeaders: []*corev3.HeaderValueOption{
+									{
+										Header: &corev3.HeaderValue{
+											Key:      "Content-Length",
+											RawValue: []byte("78"),
 										},
 									},
 								},
 							},
 						},
-					}
+					},
+				},
+			}
 
-					if err := processServer.Send(resp); err != nil {
-						log.Error().Err(err).Msg("Error sending response")
-					}
-				}
+			if err := processServer.Send(resp); err != nil {
+				log.Error().Err(err).Msg("Error sending response")
 			}
 
 		case *pb.ProcessingRequest_ResponseHeaders:
@@ -158,9 +136,6 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 
 			resp := &pb.ProcessingResponse{
 				Response: &pb.ProcessingResponse_ResponseHeaders{},
-				ModeOverride: &ext_procv3.ProcessingMode{
-					ResponseBodyMode: ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
-				},
 			}
 
 			if err := processServer.Send(resp); err != nil {
@@ -178,32 +153,32 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 				}
 			}
 
-			if value.ResponseBody.EndOfStream {
-				log.Info().Msg("Response Body EOF ****************************************************************************************")
-				log.Info().Msgf("Updating file with new content. Length: %v", len(new_resp_body))
-
-				for i, _ := range new_resp_body_chunks {
-					resp := &pb.ProcessingResponse{
-						Response: &pb.ProcessingResponse_ResponseBody{
-							ResponseBody: &pb.BodyResponse{
-								Response: &pb.CommonResponse{
-									BodyMutation: &pb.BodyMutation{
-										Mutation: &pb.BodyMutation_StreamedResponse{
-											StreamedResponse: &pb.StreamedBodyResponse{
-												Body:        new_resp_body_chunks[i],
-												EndOfStream: i == len(new_resp_body_chunks)-1,
-											},
+			resp := &pb.ProcessingResponse{
+				Response: &pb.ProcessingResponse_ResponseBody{
+					ResponseBody: &pb.BodyResponse{
+						Response: &pb.CommonResponse{
+							BodyMutation: &pb.BodyMutation{
+								Mutation: &pb.BodyMutation_Body{
+									Body: []byte("<http><body><h1>Response Body Replaced by External Processor</h1></body></html>"),
+								},
+							},
+							HeaderMutation: &pb.HeaderMutation{
+								SetHeaders: []*corev3.HeaderValueOption{
+									{
+										Header: &corev3.HeaderValue{
+											Key:      "Content-Length",
+											RawValue: []byte("79"),
 										},
 									},
 								},
 							},
 						},
-					}
+					},
+				},
+			}
 
-					if err := processServer.Send(resp); err != nil {
-						log.Error().Err(err).Msg("Error sending response")
-					}
-				}
+			if err := processServer.Send(resp); err != nil {
+				log.Error().Err(err).Msg("Error sending response")
 			}
 
 		default:
@@ -223,18 +198,6 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to listen: %v", err)
 	}
-
-	new_req_body, err = os.ReadFile("../resources/roar.mp4")
-	if err != nil {
-		log.Fatal().Err(err).Msg("Error reading file")
-	}
-	new_req_body_chunks = splitIntoChunks(new_req_body)
-
-	new_resp_body, err = os.ReadFile("../resources/something_just_like_this.mp4")
-	if err != nil {
-		log.Fatal().Err(err).Msg("Error reading file")
-	}
-	new_resp_body_chunks = splitIntoChunks(new_resp_body)
 
 	gs := grpc.NewServer(
 		grpc.MaxRecvMsgSize(1024*1024*50), // 50 MB
