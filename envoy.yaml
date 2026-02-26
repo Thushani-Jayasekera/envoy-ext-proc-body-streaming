@@ -16,7 +16,7 @@ static_resources:
         - filters:
             - name: envoy.filters.network.http_connection_manager
               typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
                 codec_type: AUTO
                 stat_prefix: ext_proc_ingress_http
                 proxy_status_config: {}
@@ -28,7 +28,7 @@ static_resources:
                 access_log:
                   - name: file-logger-access-logs-http-connection-manager
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog"
                       path: /dev/stdout
                       log_format:
                         text_format_source:
@@ -37,11 +37,11 @@ static_resources:
                         formatters:
                           - name: envoy.formatter.req_without_query
                             typed_config:
-                              "@type": type.googleapis.com/envoy.extensions.formatter.req_without_query.v3.ReqWithoutQuery
+                              "@type": "type.googleapis.com/envoy.extensions.formatter.req_without_query.v3.ReqWithoutQuery"
                 http_filters:
                   - name: envoy.filters.http.ext_proc
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                      "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor"
                       grpc_service:
                         envoy_grpc:
                           cluster_name: ext-processor-grpc-service
@@ -77,7 +77,7 @@ static_resources:
                         nanos: 250000000 # 250ms
                   - name: envoy.filters.http.router
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                      "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
                 http_protocol_options: {}
                 route_config:
                   name: static_routes
@@ -99,7 +99,7 @@ static_resources:
                             cluster: netty
                           typed_per_filter_config:
                             envoy.filters.http.ext_proc:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
                               overrides:
                                 processing_mode:
                                   request_header_mode: SEND
@@ -121,7 +121,7 @@ static_resources:
                             cluster: netty
                           # typed_per_filter_config:
                           #   envoy.filters.http.ext_proc:
-                          #     "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                          #     "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
                           #     overrides:
                           #       processing_mode:
                           #         request_header_mode: SEND
@@ -144,7 +144,7 @@ static_resources:
                             idle_timeout: 0s
                           typed_per_filter_config:
                             envoy.filters.http.ext_proc:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
                               overrides:
                                 processing_mode:
                                   request_header_mode: SEND
@@ -153,6 +153,75 @@ static_resources:
                                   response_body_mode: FULL_DUPLEX_STREAMED
                                   request_trailer_mode: SKIP
                                   response_trailer_mode: SKIP
+                        - name: post_/v1/mistral/chat/completions
+                          match:
+                            prefix: "/v1/mistral/chat/completions"
+                            headers:
+                              - name: ":method"
+                                string_match:
+                                  exact: "POST"
+                          route:
+                            cluster: mistral_cluster
+                            prefix_rewrite: "/v1/chat/completions"
+                            host_rewrite_literal: api.mistral.ai
+                            timeout: 0s
+                            idle_timeout: 0s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
+                              overrides:
+                                processing_mode:
+                                  request_header_mode: SEND
+                                  response_header_mode: SEND
+                                  request_body_mode: FULL_DUPLEX_STREAMED
+                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_trailer_mode: SKIP
+                                  response_trailer_mode: SKIP
+                        # Azure OpenAI: replace your-resource in envoy.yaml and cluster with your Azure OpenAI resource name
+                        - name: post_/v1/azure/openai
+                          match:
+                            prefix: "/v1/azure/openai"
+                            headers:
+                              - name: ":method"
+                                string_match:
+                                  exact: "POST"
+                          route:
+                            cluster: azure_openai_cluster
+                            prefix_rewrite: ""
+                            host_rewrite_literal: your-resource.openai.azure.com
+                            timeout: 0s
+                            idle_timeout: 0s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
+                              overrides:
+                                processing_mode:
+                                  request_header_mode: SEND
+                                  response_header_mode: SEND
+                                  request_body_mode: FULL_DUPLEX_STREAMED
+                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_trailer_mode: SKIP
+                                  response_trailer_mode: SKIP
+                        - name: any_/httpbin
+                          match:
+                            prefix: "/httpbin"
+                          route:
+                            cluster: httpbin_cluster
+                            prefix_rewrite: "/anything"
+                            host_rewrite_literal: httpbin.konghq.com
+                            timeout: 0s
+                            idle_timeout: 0s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
+                              overrides:
+                                processing_mode:
+                                  request_header_mode: SEND
+                                  response_header_mode: SEND
+                                  request_body_mode: BUFFERED
+                                  response_body_mode: BUFFERED  
+                                  request_trailer_mode: SEND
+                                  response_trailer_mode: SEND
                         - name: get_/sse-test
                           match:
                             prefix: "/sse-test"
@@ -164,7 +233,7 @@ static_resources:
                             idle_timeout: 0s
                           typed_per_filter_config:
                             envoy.filters.http.ext_proc:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute"
                               overrides:
                                 processing_mode:
                                   request_header_mode: SEND
@@ -184,14 +253,14 @@ static_resources:
         - filters:
             - name: envoy.filters.network.http_connection_manager
               typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
                 codec_type: AUTO
                 stat_prefix: ingress_http
                 proxy_status_config: {}
                 access_log:
                   - name: file-logger-access-logs-http-connection-manager
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog"
                       path: /dev/stdout
                       log_format:
                         text_format_source:
@@ -200,11 +269,11 @@ static_resources:
                         formatters:
                           - name: envoy.formatter.req_without_query
                             typed_config:
-                              "@type": type.googleapis.com/envoy.extensions.formatter.req_without_query.v3.ReqWithoutQuery
+                              "@type": "type.googleapis.com/envoy.extensions.formatter.req_without_query.v3.ReqWithoutQuery"
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                      "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
                 http_protocol_options: {}
                 route_config:
                   name: static_routes
@@ -246,7 +315,7 @@ static_resources:
       # per_connection_buffer_limit_bytes: 10240 # 10KB
       typed_extension_protocol_options:
         envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
           explicit_http_config:
             http2_protocol_options: {}
       load_assignment:
@@ -276,8 +345,66 @@ static_resources:
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
-          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
           sni: api.openai.com
+    - name: mistral_cluster
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      dns_lookup_family: V4_ONLY
+      load_assignment:
+        cluster_name: mistral_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: api.mistral.ai
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+          sni: api.mistral.ai
+    # Replace your-resource with your Azure OpenAI resource name (e.g. mycompany-openai)
+    - name: azure_openai_cluster
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      dns_lookup_family: V4_ONLY
+      load_assignment:
+        cluster_name: azure_openai_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: your-resource.openai.azure.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+          sni: your-resource.openai.azure.com
+    - name: httpbin_cluster
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      dns_lookup_family: V4_ONLY
+      load_assignment:
+        cluster_name: httpbin_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: httpbin.konghq.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+          sni: httpbin.konghq.com
     - name: sse_dev_cluster
       type: LOGICAL_DNS
       lb_policy: ROUND_ROBIN
@@ -296,5 +423,5 @@ static_resources:
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
-          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
           sni: sse.dev

@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -93,6 +94,73 @@ func min(a, b int) int {
 	return b
 }
 
+// truncate returns s truncated to at most max runes, with "..." if truncated.
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
+}
+
+// ── PII Masking ───────────────────────────────────────────────────────────────
+
+// piiPattern holds a compiled regex and its replacement string.
+type piiPattern struct {
+	name        string
+	re          *regexp.Regexp
+	replacement string
+}
+
+// piiPatterns is the list of PII patterns applied to every body.
+// Patterns are applied in order — earlier patterns take priority.
+var piiPatterns = []piiPattern{
+	{
+		name:        "SSN",
+		re:          regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+		replacement: "***-**-****",
+	},
+	{
+		name:        "CreditCard",
+		re:          regexp.MustCompile(`\b(?:\d{4}[\s\-]?){3}\d{4}\b`),
+		replacement: "****-****-****-****",
+	},
+	{
+		name:        "Email",
+		re:          regexp.MustCompile(`\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b`),
+		replacement: "[REDACTED-EMAIL]",
+	},
+	{
+		name:        "Phone",
+		re:          regexp.MustCompile(`\b(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b`),
+		replacement: "[REDACTED-PHONE]",
+	},
+}
+
+// maskPII applies all PII patterns to data and returns the masked result.
+// It also logs each match found so it is visible in the ext-proc output.
+func maskPII(data []byte, requestID int) []byte {
+	log.Debug().
+		Int("input_bytes", len(data)).
+		Str("input_preview", truncate(string(data), 200)).
+		Msgf("[PII-MASK] scanning [%d]", requestID)
+
+	result := data
+	for _, p := range piiPatterns {
+		matches := p.re.FindAll(result, -1)
+		if len(matches) > 0 {
+			log.Warn().
+				Str("pii_type", p.name).
+				Int("matches_found", len(matches)).
+				Msgf("[PII-MASK] masking %d %s match(es) [%d]", len(matches), p.name, requestID)
+			result = p.re.ReplaceAll(result, []byte(p.replacement))
+		}
+	}
+	return result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ChatCompletionChunk represents a streaming chunk from OpenAI
 type ChatCompletionChunk struct {
 	ID      string `json:"id"`
@@ -156,11 +224,16 @@ func parseSSETokens(body string) []string {
 func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServer) error {
 	ctx := processServer.Context()
 	rnd := rand.Int()
-	var contentEncoding string       // Track content encoding for this request
-	var gzipReader *gzip.Reader      // Persistent gzip reader for streaming decompression
-	var pipeReader *io.PipeReader    // Pipe reader for streaming
-	var pipeWriter *io.PipeWriter    // Pipe writer for streaming
-	var decompressChan chan []byte   // Channel to receive decompressed data
+	var contentEncoding string     // Track content encoding for this request
+	var gzipReader *gzip.Reader    // Persistent gzip reader for streaming decompression
+	var pipeReader *io.PipeReader  // Pipe reader for streaming
+	var pipeWriter *io.PipeWriter  // Pipe writer for streaming
+	var decompressChan chan []byte // Channel to receive decompressed data
+	var isStreaming bool           // True if response is chunked/SSE, false if Content-Length (buffered)
+	// Token monitoring for OpenAI-style streaming response
+	var responseChunkIndex int
+	var totalTokensReceived int
+	var allTokensCollected []string
 
 	for {
 		select {
@@ -235,150 +308,271 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 			}
 
 		case *pb.ProcessingRequest_ResponseHeaders:
-			log.Info().Msgf("******** Processing Response Headers ********* %v", rnd)
+			log.Info().Msgf("======== RESPONSE HEADERS [%d] ========", rnd)
 
-			// Capture Content-Encoding header
+			// Dump all response headers and capture relevant ones
+			var transferEncoding string
+			var contentType string
+			var contentLength string
 			for _, header := range value.ResponseHeaders.Headers.Headers {
-				if strings.ToLower(header.Key) == "content-encoding" {
+				log.Info().Msgf("  [RES-HDR] %s: %s", header.Key, string(header.RawValue))
+				switch strings.ToLower(header.Key) {
+				case "content-encoding":
 					contentEncoding = string(header.RawValue)
-					log.Info().Msgf("Detected Content-Encoding: %s", contentEncoding)
-					break
+				case "transfer-encoding":
+					transferEncoding = string(header.RawValue)
+				case "content-type":
+					contentType = string(header.RawValue)
+				case "content-length":
+					contentLength = string(header.RawValue)
 				}
 			}
 
+			// Detect whether the response is truly streaming:
+			//   Transfer-Encoding: chunked → streaming (size unknown, arrives in chunks)
+			//   Content-Type: text/event-stream → SSE streaming
+			//   Content-Length present → non-streaming (complete response, size known)
+			isChunked := strings.Contains(strings.ToLower(transferEncoding), "chunked")
+			isSSE := strings.Contains(strings.ToLower(contentType), "text/event-stream")
+			isStreaming = isChunked || isSSE
+
+			modeLabel := "FULL_DUPLEX_STREAMED (no override)"
+			if !isStreaming {
+				modeLabel = "BUFFERED (override)"
+			}
+			log.Info().
+				Str("transfer-encoding", transferEncoding).
+				Str("content-type", contentType).
+				Str("content-length", contentLength).
+				Str("content-encoding", contentEncoding).
+				Bool("is_chunked", isChunked).
+				Bool("is_sse", isSSE).
+				Bool("is_streaming", isStreaming).
+				Str("mode_decision", modeLabel).
+				Msgf("[STREAM-DETECT] request=%d", rnd)
+
 			resp := &pb.ProcessingResponse{
 				Response: &pb.ProcessingResponse_ResponseHeaders{},
-				// Don't override mode, use what's configured in envoy.yaml
 			}
+
+			if !isStreaming {
+				// Non-streaming response (Content-Length present, no chunked encoding).
+				// Override to BUFFERED so Envoy buffers the complete body before sending
+				// to ext-proc. This preserves Content-Length on the response to the client
+				// and avoids converting to Transfer-Encoding: chunked, which breaks clients
+				// that do not support chunked responses.
+				log.Warn().Msgf("[MODE-OVERRIDE] Non-streaming response — overriding response body mode to BUFFERED [%d]", rnd)
+				resp.ModeOverride = &ext_procv3.ProcessingMode{
+					ResponseBodyMode: ext_procv3.ProcessingMode_BUFFERED,
+				}
+			}
+
+			// log.Info().Msgf("Setting Response Body Mode to BUFFERED [%d]", rnd)
+			// resp.ModeOverride = &ext_procv3.ProcessingMode{
+			// 	ResponseBodyMode: ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
+			// }
 
 			if err := processServer.Send(resp); err != nil {
 				log.Error().Err(err).Msg("Error sending response")
 			}
 
 		case *pb.ProcessingRequest_ResponseBody:
-			log.Info().Msgf("******** Processing Response Body ********* %v", rnd)
-
 			body := value.ResponseBody.Body
-			log.Info().Msgf("Received chunk: %d bytes, EndOfStream: %v", len(body), value.ResponseBody.EndOfStream)
+			eos := value.ResponseBody.EndOfStream
 
-			var decodedBody []byte
+			if isStreaming {
+				// ── STREAMING PATH ────────────────────────────────────────────
+				// Response has Transfer-Encoding: chunked or Content-Type: text/event-stream.
+				// Envoy is in FULL_DUPLEX_STREAMED mode — body arrives as multiple chunks.
+				// Each chunk must be echoed back via StreamedBodyResponse.
+				log.Info().
+					Int("chunk_bytes", len(body)).
+					Bool("eos", eos).
+					Msgf("[STREAMING-PATH] chunk arrived [%d]", rnd)
 
-			if contentEncoding == "gzip" {
-				// Initialize pipe and gzip reader on first chunk
-				if pipeReader == nil {
-					pipeReader, pipeWriter = io.Pipe()
-					decompressChan = make(chan []byte, 10)
+				var decodedBody []byte
 
-					// Start goroutine to decompress data from pipe
-					go func() {
-						defer close(decompressChan)
-						var err error
-						gzipReader, err = gzip.NewReader(pipeReader)
-						if err != nil {
-							log.Error().Err(err).Msg("Failed to create gzip reader")
-							return
-						}
-						defer gzipReader.Close()
+				if contentEncoding == "gzip" {
+					// Initialize pipe and gzip reader on first chunk
+					if pipeReader == nil {
+						pipeReader, pipeWriter = io.Pipe()
+						decompressChan = make(chan []byte, 10)
 
-						log.Info().Msg("Initialized streaming gzip reader")
-
-						// Continuously read decompressed data
-						buf := make([]byte, 4096)
-						for {
-							n, err := gzipReader.Read(buf)
-							if n > 0 {
-								// Send decompressed data to channel
-								data := make([]byte, n)
-								copy(data, buf[:n])
-								decompressChan <- data
-							}
+						go func() {
+							defer close(decompressChan)
+							var err error
+							gzipReader, err = gzip.NewReader(pipeReader)
 							if err != nil {
-								if err != io.EOF {
-									log.Warn().Err(err).Msg("Error reading from gzip stream")
-								}
-								break
+								log.Error().Err(err).Msg("Failed to create gzip reader")
+								return
 							}
-						}
-					}()
-				}
+							defer gzipReader.Close()
+							log.Info().Msg("Initialized streaming gzip reader")
+							buf := make([]byte, 4096)
+							for {
+								n, err := gzipReader.Read(buf)
+								if n > 0 {
+									data := make([]byte, n)
+									copy(data, buf[:n])
+									decompressChan <- data
+								}
+								if err != nil {
+									if err != io.EOF {
+										log.Warn().Err(err).Msg("Error reading from gzip stream")
+									}
+									break
+								}
+							}
+						}()
+					}
 
-				// Write compressed chunk to pipe
-				_, err := pipeWriter.Write(body)
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to write to pipe")
-				}
+					if _, err := pipeWriter.Write(body); err != nil {
+						log.Error().Err(err).Msg("Failed to write to pipe")
+					}
+					if eos {
+						pipeWriter.Close()
+						log.Info().Msg("Closed pipe writer")
+					}
 
-				// Close pipe writer on end of stream
-				if value.ResponseBody.EndOfStream {
-					pipeWriter.Close()
-					log.Info().Msg("Closed pipe writer")
-				}
-
-				// Read all available decompressed data from channel (non-blocking)
-				var allDecompressed bytes.Buffer
-			readLoop:
-				for {
-					select {
-					case data, ok := <-decompressChan:
-						if !ok {
+					var allDecompressed bytes.Buffer
+				readLoop:
+					for {
+						select {
+						case data, ok := <-decompressChan:
+							if !ok {
+								break readLoop
+							}
+							allDecompressed.Write(data)
+						default:
 							break readLoop
 						}
-						allDecompressed.Write(data)
-					default:
-						// No more data available right now
-						break readLoop
 					}
+					decodedBody = allDecompressed.Bytes()
+					if len(decodedBody) > 0 {
+						log.Info().Msgf("Decompressed: %d bytes", len(decodedBody))
+					}
+				} else {
+					decodedBody = body
 				}
 
-				decodedBody = allDecompressed.Bytes()
+				// Parse SSE tokens for OpenAI streaming responses
 				if len(decodedBody) > 0 {
-					log.Info().Msgf("Decompressed: %d bytes", len(decodedBody))
-				}
-			} else {
-				// No compression, use body as-is
-				decodedBody = body
-			}
-
-			// Print decompressed SSE events as they arrive
-			if len(decodedBody) > 0 {
-				fmt.Println("=== SSE Event Chunk ===")
-				fmt.Println(string(decodedBody))
-				fmt.Println("=======================")
-
-				// Parse SSE format and extract tokens (for OpenAI)
-				tokens := parseSSETokens(string(decodedBody))
-				if len(tokens) > 0 {
-					fmt.Println("=== Tokens ===")
-					for _, token := range tokens {
-						fmt.Printf("Token: %s\n", token)
+					responseChunkIndex++
+					tokens := parseSSETokens(string(decodedBody))
+					if len(tokens) > 0 {
+						totalTokensReceived += len(tokens)
+						allTokensCollected = append(allTokensCollected, tokens...)
+						log.Info().
+							Int("chunk_index", responseChunkIndex).
+							Int("tokens_in_chunk", len(tokens)).
+							Int("running_total_tokens", totalTokensReceived).
+							Strs("tokens", tokens).
+							Msg("openai_tokens_chunk")
+						fmt.Printf("[TOKEN_MONITOR] chunk=%d tokens_in_chunk=%d running_total=%d | %s\n",
+							responseChunkIndex, len(tokens), totalTokensReceived, strings.Join(tokens, ""))
+					} else {
+						log.Info().
+							Int("chunk_index", responseChunkIndex).
+							Int("bytes", len(decodedBody)).
+							Msg("openai_sse_chunk_no_tokens")
 					}
-					fmt.Println("==============")
 				}
-			}
 
-			if value.ResponseBody.EndOfStream {
-				log.Info().Msg("Response Body EOF ****************************************************************************************")
-			}
+				if eos {
+					log.Info().Msg("[STREAMING-PATH] EndOfStream reached")
+					fullText := strings.Join(allTokensCollected, "")
+					log.Info().
+						Int("total_chunks", responseChunkIndex).
+						Int("total_tokens", totalTokensReceived).
+						Int("total_chars", len(fullText)).
+						Str("full_text_preview", truncate(fullText, 200)).
+						Msg("openai_tokens_summary")
+					fmt.Printf("[TOKEN_MONITOR] SUMMARY total_chunks=%d total_tokens=%d total_chars=%d\n",
+						responseChunkIndex, totalTokensReceived, len(fullText))
+				}
 
-			resp := &pb.ProcessingResponse{
-				Response: &pb.ProcessingResponse_ResponseBody{
-					ResponseBody: &pb.BodyResponse{
-						Response: &pb.CommonResponse{
-							BodyMutation: &pb.BodyMutation{
-								Mutation: &pb.BodyMutation_StreamedResponse{
-									StreamedResponse: &pb.StreamedBodyResponse{
-										Body:        body,
-										EndOfStream: value.ResponseBody.EndOfStream,
+				// Apply PII masking to the raw chunk before forwarding.
+				maskedBody := maskPII(body, rnd)
+				if !bytes.Equal(maskedBody, body) {
+					log.Info().Msgf("[STREAMING-PATH] chunk mutated by PII masking [%d]", rnd)
+				}
+
+				// In FULL_DUPLEX_STREAMED mode: must echo each chunk back via StreamedBodyResponse.
+				// Sending empty ack would drop the chunk — client would receive incomplete response.
+				resp := &pb.ProcessingResponse{
+					Response: &pb.ProcessingResponse_ResponseBody{
+						ResponseBody: &pb.BodyResponse{
+							Response: &pb.CommonResponse{
+								BodyMutation: &pb.BodyMutation{
+									Mutation: &pb.BodyMutation_StreamedResponse{
+										StreamedResponse: &pb.StreamedBodyResponse{
+											Body:        maskedBody,
+											EndOfStream: eos,
+										},
 									},
 								},
 							},
 						},
 					},
-				},
-			}
+				}
+				if err := processServer.Send(resp); err != nil {
+					log.Error().Err(err).Msg("Error sending response")
+				}
 
-			if err := processServer.Send(resp); err != nil {
-				log.Error().Err(err).Msg("Error sending response")
+			} else {
+				// ── BUFFERED PATH ─────────────────────────────────────────────
+				// Response has Content-Length — non-streaming, complete body.
+				// ModeOverride=BUFFERED was sent at ResponseHeaders so Envoy assembled
+				// the full body before calling us. EOS is always true here.
+				// Use BodyMutation_Body (not StreamedBodyResponse) to return the complete body.
+				// This preserves Content-Length on the downstream response and avoids
+				// converting to Transfer-Encoding: chunked, which breaks some clients.
+				log.Info().
+					Int("body_bytes", len(body)).
+					Bool("eos", eos).
+					Msgf("[BUFFERED-PATH] complete body arrived [%d]", rnd)
+
+				if !eos {
+					// Should never happen when BUFFERED override was sent — log as warning
+					log.Warn().Msgf("[BUFFERED-PATH] unexpected EOS=false in buffered mode [%d]", rnd)
+				}
+
+				decodedBody := body
+				if contentEncoding == "gzip" {
+					if decoded, err := decodeBody(body, contentEncoding); err == nil {
+						decodedBody = decoded
+					} else {
+						log.Warn().Err(err).Msg("Failed to decode gzip body in buffered path")
+					}
+				}
+
+				log.Info().
+					Str("body_preview", truncate(string(decodedBody), 500)).
+					Msgf("[BUFFERED-PATH] body content [%d]", rnd)
+
+					// Apply PII masking on decoded (plaintext) body.
+				maskedBody := maskPII(decodedBody, rnd)
+				if !bytes.Equal(maskedBody, decodedBody) {
+					log.Info().Msgf("[BUFFERED-PATH] body mutated by PII masking [%d]", rnd)
+				}
+
+				// In BUFFERED mode: use BodyMutation_Body with the complete body.
+				resp := &pb.ProcessingResponse{
+					Response: &pb.ProcessingResponse_ResponseBody{
+						ResponseBody: &pb.BodyResponse{
+							Response: &pb.CommonResponse{
+								BodyMutation: &pb.BodyMutation{
+									Mutation: &pb.BodyMutation_Body{
+										Body: maskedBody,
+									},
+								},
+							},
+						},
+					},
+				}
+				if err := processServer.Send(resp); err != nil {
+					log.Error().Err(err).Msg("Error sending response")
+				}
 			}
 
 		default:
@@ -392,6 +586,7 @@ func main() {
 	flag.Parse()
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
