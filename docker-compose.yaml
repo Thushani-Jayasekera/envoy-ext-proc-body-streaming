@@ -1,10 +1,10 @@
 services:
   envoy:
-    image: renukafernando/envoy-gperftools:v1.34.1
+    image: envoyproxy/envoy:distroless-v1.36.4
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml
       - ./envoy/log:/var/log/envoy
-    command: envoy -c /etc/envoy/envoy.yaml --service-cluster front-proxy --file-flush-interval-msec 50 -l info --component-log-level ext_proc:trace
+    command: -c /etc/envoy/envoy.yaml --service-cluster front-proxy --file-flush-interval-msec 50 -l info --component-log-level ext_proc:trace
     ports:
       - "18080:18080" # with ext proc
       - "19090:19090" # no ext proc
@@ -19,18 +19,18 @@ services:
           memory: 2G
 
   echo-netty:
-    image: renukafernando/netty-http-echo-service:0.4.6-arm # for arm64
-    # image: renukafernando/netty-http-echo-service:0.4.6 # for x86
-    command: ["-m", "1g", "--", "--max-content-length", "1000000000"]
+    build:
+      context: ./echo-backend
+      dockerfile: Dockerfile
     deploy:
       replicas: 1
       resources:
         limits:
           cpus: "1"
-          memory: 1500M
+          memory: 512M
         reservations:
           cpus: "1"
-          memory: 1500M
+          memory: 512M
 
   # ext-proc:
   #   image: alpine:3.21.0
