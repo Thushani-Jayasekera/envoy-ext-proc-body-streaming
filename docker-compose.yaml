@@ -7,6 +7,7 @@ services:
     command: envoy -c /etc/envoy/envoy.yaml --service-cluster front-proxy --file-flush-interval-msec 50 -l info --component-log-level ext_proc:trace
     ports:
       - "18080:18080" # with ext proc
+      - "18081:18081" # stream mode override
       - "19090:19090" # no ext proc
       - "9901:9901" # admin port
     deploy:
@@ -31,6 +32,39 @@ services:
         reservations:
           cpus: "1"
           memory: 1500M
+  ext-proc-mode-override:
+    build:
+      context: ./external-processor-mode-override
+      dockerfile: Dockerfile
+    command: ["-port", "9003", "-write_data_to_file"]
+    volumes:
+      - ./temp:/app/temp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  # streaming-backend runs locally on the host (not in Docker)
+  # Start it with: cd streaming-backend && go run main.go -port 8889 -write_to_file -temp_dir ../temp
+  # streaming-backend:
+  #   build:
+  #     context: ./streaming-backend
+  #     dockerfile: Dockerfile
+  #   command: ["-port", "8889", "-write_to_file"]
+  #   volumes:
+  #     - ./temp:/app/temp
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "0.5"
+  #         memory: 200M
+  #       reservations:
+  #         cpus: "0.5"
+  #         memory: 200M
 
   # ext-proc:
   #   image: alpine:3.21.0
