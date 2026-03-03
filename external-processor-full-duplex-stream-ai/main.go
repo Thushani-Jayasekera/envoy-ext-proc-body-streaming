@@ -234,7 +234,6 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 	var responseChunkIndex int
 	var totalTokensReceived int
 	var allTokensCollected []string
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -267,7 +266,7 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 					RequestTrailerMode:  ext_procv3.ProcessingMode_SKIP,
 					RequestBodyMode:     ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
 					ResponseHeaderMode:  ext_procv3.ProcessingMode_SEND,
-					ResponseBodyMode:    ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
+					ResponseBodyMode:    ext_procv3.ProcessingMode_BUFFERED,
 					ResponseTrailerMode: ext_procv3.ProcessingMode_SKIP,
 				},
 			}
@@ -363,7 +362,20 @@ func (s *server) Process(processServer ext_proc_v3.ExternalProcessor_ProcessServ
 				// that do not support chunked responses.
 				log.Warn().Msgf("[MODE-OVERRIDE] Non-streaming response — overriding response body mode to BUFFERED [%d]", rnd)
 				resp.ModeOverride = &ext_procv3.ProcessingMode{
-					ResponseBodyMode: ext_procv3.ProcessingMode_BUFFERED,
+					RequestTrailerMode:  ext_procv3.ProcessingMode_SKIP,
+					RequestBodyMode:     ext_procv3.ProcessingMode_BUFFERED,
+					ResponseHeaderMode:  ext_procv3.ProcessingMode_SEND,
+					ResponseBodyMode:    ext_procv3.ProcessingMode_BUFFERED,
+					ResponseTrailerMode: ext_procv3.ProcessingMode_SKIP,
+				}
+			} else {
+				log.Warn().Msgf("[MODE-OVERRIDE] Streaming response — overriding response body mode to FULL_DUPLEX_STREAMED [%d]", rnd)
+				resp.ModeOverride = &ext_procv3.ProcessingMode{
+					RequestTrailerMode:  ext_procv3.ProcessingMode_SKIP,
+					RequestBodyMode:     ext_procv3.ProcessingMode_BUFFERED,
+					ResponseHeaderMode:  ext_procv3.ProcessingMode_SEND,
+					ResponseBodyMode:    ext_procv3.ProcessingMode_FULL_DUPLEX_STREAMED,
+					ResponseTrailerMode: ext_procv3.ProcessingMode_SKIP,
 				}
 			}
 

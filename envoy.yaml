@@ -33,7 +33,7 @@ static_resources:
                       log_format:
                         text_format_source:
                           inline_string: >
-                            [%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %REQ(:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %BYTES_RECEIVED% %BYTES_SENT% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST% %DURATION% %REQUEST_DURATION% %REQUEST_TX_DURATION% %RESPONSE_DURATION% %RESPONSE_TX_DURATION%"
+                            [%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %REQ(:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %BYTES_RECEIVED% %BYTES_SENT% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST% %DURATION% %REQUEST_DURATION% %REQUEST_TX_DURATION% %RESPONSE_DURATION% %RESPONSE_TX_DURATION% [DOWNSTREAM-HEADERS resp_content-length=%RESP(content-length)% resp_transfer-encoding=%RESP(transfer-encoding)% resp_content-type=%RESP(content-type)%]"
                         formatters:
                           - name: envoy.formatter.req_without_query
                             typed_config:
@@ -149,8 +149,8 @@ static_resources:
                                 processing_mode:
                                   request_header_mode: SEND
                                   response_header_mode: SEND
-                                  request_body_mode: FULL_DUPLEX_STREAMED
-                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_body_mode: BUFFERED
+                                  response_body_mode: BUFFERED
                                   request_trailer_mode: SKIP
                                   response_trailer_mode: SKIP
                         - name: post_/v1/mistral/chat/completions
@@ -173,8 +173,8 @@ static_resources:
                                 processing_mode:
                                   request_header_mode: SEND
                                   response_header_mode: SEND
-                                  request_body_mode: FULL_DUPLEX_STREAMED
-                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_body_mode: BUFFERED
+                                  response_body_mode: BUFFERED
                                   request_trailer_mode: SKIP
                                   response_trailer_mode: SKIP
                         # Azure OpenAI: replace your-resource in envoy.yaml and cluster with your Azure OpenAI resource name
@@ -198,8 +198,8 @@ static_resources:
                                 processing_mode:
                                   request_header_mode: SEND
                                   response_header_mode: SEND
-                                  request_body_mode: FULL_DUPLEX_STREAMED
-                                  response_body_mode: FULL_DUPLEX_STREAMED
+                                  request_body_mode: BUFFERED
+                                  response_body_mode: BUFFERED
                                   request_trailer_mode: SKIP
                                   response_trailer_mode: SKIP
                         - name: any_/httpbin
