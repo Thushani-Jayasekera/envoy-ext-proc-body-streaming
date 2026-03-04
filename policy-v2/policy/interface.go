@@ -143,29 +143,21 @@ type StreamingResponseBodyPolicy interface {
 // handler. Implement this on your streaming policy to opt into accumulation.
 //
 // Framework logic:
-//   - ANY policy NeedsMoreData → hold (echo raw chunk downstream unmodified)
+//   - ANY policy NeedsMoreData → hold (suppress chunk downstream)
 //   - ALL policies ready       → flush (run chain on accumulated buffer)
-//   - eos = true               → flush unconditionally regardless of NeedsMoreData
+//   - eos = true               → kernel flushes unconditionally; NeedsMoreData
+//     is NOT called on the final chunk — the policy never needs to inspect eos.
 //
-// Warning: raw chunks are echoed unmodified during the hold phase. Only buffer
-// on chunk-aligned delimiters (e.g., SSE \n\n) for mutating policies, or
-// implement FullBodyRequired to degrade to buffered mode instead.
+// Warning: chunks are suppressed during the hold phase, so the client receives
+// no data until the flush boundary. Only hold on chunk-aligned delimiters
+// (e.g. SSE \n\n) to avoid unbounded latency.
 //
-// Use the utility functions in buffering.go to implement NeedsMoreData without
-// writing the logic from scratch:
+// Use the utility functions in buffering.go to implement NeedsMoreData:
 //
-//	func (p *MyPolicy) NeedsMoreData(accumulated []byte, eos bool) bool {
-//	    return policy.NeedsMoreDataSSE(accumulated, eos)
+//	func (p *MyPolicy) NeedsMoreData(accumulated []byte) bool {
+//	    return policy.NeedsMoreDataSSE(accumulated)
 //	}
 type ChunkBuffering interface {
-	NeedsMoreData(accumulated []byte, eos bool) bool
+	NeedsMoreData(accumulated []byte) bool
 }
 
-// FullBodyRequired signals that a nominally streaming policy actually needs the
-// full body before processing. The kernel degrades to BUFFERED mode and delivers
-// the body as a single synthetic chunk with EndOfStream=true.
-// Use this when your policy needs ImmediateResponse capability but is otherwise
-// configured as a streaming policy for chain-compatibility reasons.
-type FullBodyRequired interface {
-	RequiresFullBody() bool
-}
