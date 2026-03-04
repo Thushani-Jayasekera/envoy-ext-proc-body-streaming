@@ -1,0 +1,133 @@
+name: word-count-guardrail
+version: v0.1.0
+description: |
+  Validates the word count of request or response body content against
+  configurable minimum and maximum thresholds. Blocks requests or responses
+  that fall outside the allowed range with HTTP 422.
+
+  Supports JSONPath extraction to validate a specific field rather than the
+  entire payload. The request and response phases are configured independently.
+
+  Response side is always processed in BUFFERED mode — word count validation
+  requires the complete response text. For streaming LLM responses (SSE),
+  Envoy assembles all chunks before validation runs.
+
+parameters:
+  type: object
+  properties:
+
+    request:
+      type: object
+      description: Configuration for request-phase word count validation.
+      properties:
+        min:
+          type: integer
+          description: Minimum allowed word count (inclusive). Must be >= 0.
+          minimum: 0
+        max:
+          type: integer
+          description: Maximum allowed word count (inclusive). Must be >= 1.
+          minimum: 1
+        jsonPath:
+          type: string
+          description: |
+            JSONPath expression to extract the text field to validate from the
+            request body JSON. If empty, the entire request body is used.
+            Supports nested paths and array indexing.
+            Examples:
+              "$.prompt"               – top-level string field
+              "$.messages[0].content"  – first message content (OpenAI chat)
+          default: ""
+        invert:
+          type: boolean
+          description: |
+            When true, validation PASSES when the word count is OUTSIDE the
+            min–max range (e.g. to block requests that are too short).
+            When false (default), validation passes when within the range.
+          default: false
+        showAssessment:
+          type: boolean
+          description: |
+            When true, the error response includes a human-readable explanation
+            of why the validation failed (e.g. "word count 3 is outside 5–500").
+            When false, only the generic action reason is included.
+          default: false
+      required:
+        - min
+        - max
+
+    response:
+      type: object
+      description: |
+        Configuration for response-phase word count validation.
+
+        The response body format depends on whether the upstream LLM streamed:
+
+          Non-streaming (stream: false):
+            Plain JSON — e.g. {"choices":[{"message":{"content":"..."}}]}
+            Use jsonPath to extract the text field (e.g. "$.choices[0].message.content").
+
+          Streaming (stream: true):
+            Envoy buffers all SSE chunks into one body before ext_proc sees it.
+            The body is a concatenation of SSE events:
+              data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n
+              data: {"choices":[{"delta":{"content":"world"}}]}\n\n
+              data: [DONE]\n\n
+            Use streamingJsonPath to extract the content field per event
+            (e.g. "$.choices[0].delta.content"). Values from all events are
+            concatenated before word count validation runs.
+
+        Both jsonPath and streamingJsonPath default to empty. When empty:
+          - jsonPath empty      → full plain-JSON body used as text
+          - streamingJsonPath empty → auto-extraction: tries delta.content
+            then message.content per event (covers OpenAI out of the box)
+      properties:
+        min:
+          type: integer
+          description: Minimum allowed word count (inclusive). Must be >= 0.
+          minimum: 0
+        max:
+          type: integer
+          description: Maximum allowed word count (inclusive). Must be >= 1.
+          minimum: 1
+        jsonPath:
+          type: string
+          description: |
+            JSONPath expression applied to the response body when the upstream
+            returned a plain JSON response (non-streaming).
+            Examples:
+              "$.choices[0].message.content"   – OpenAI non-streaming
+              "$.content"                      – simple single-field response
+          default: ""
+        streamingJsonPath:
+          type: string
+          description: |
+            JSONPath expression applied to EACH SSE event when the upstream
+            returned a streaming response (stream: true). The extracted string
+            value from every event is concatenated and the full text is
+            validated once against min/max.
+            Examples:
+              "$.choices[0].delta.content"     – OpenAI streaming
+              "$.delta.text"                   – custom streaming schema
+            When empty, the policy auto-extracts by trying delta.content then
+            message.content per event (default covers OpenAI without config).
+          default: ""
+        invert:
+          type: boolean
+          description: |
+            When true, validation PASSES when the word count is OUTSIDE the
+            min–max range. When false (default), passes when within the range.
+          default: false
+        showAssessment:
+          type: boolean
+          description: |
+            When true, the error response includes a human-readable explanation
+            of the violation. When false, only the generic action reason is included.
+          default: false
+      required:
+        - min
+        - max
+
+systemParameters:
+  type: object
+  properties: {}
