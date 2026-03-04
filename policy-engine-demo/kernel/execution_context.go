@@ -350,10 +350,11 @@ func (ec *ExecutionContext) HandleResponseBody(
 // ChunkBuffering strategy (controlled by policy.NeedsMoreData):
 //
 //  1. Append incoming raw chunk to accumBuf.
-//  2. Ask each ChunkBuffering policy: NeedsMoreData(accumBuf, eos)?
+//  2. If eos=true → flush unconditionally (kernel never calls NeedsMoreData on final chunk).
+//     If eos=false → ask each ChunkBuffering policy: NeedsMoreData(accumBuf)?
 //     - ANY policy returns true → hold: suppress this chunk (send empty ack to Envoy).
 //       The client receives nothing yet.  No unmasked data leaks downstream.
-//     - ALL policies return false OR eos=true → flush: run the chain on accumBuf.
+//     - ALL policies return false → flush: run the chain on accumBuf.
 //  3. On flush: run OnResponseBodyChunk on each policy with the accumulated buffer.
 //     Send the (possibly mutated) result downstream as StreamedBodyResponse.
 //  4. Reset accumBuf for the next accumulation window.
@@ -368,11 +369,13 @@ func (ec *ExecutionContext) handleStreamingResponseBody(chunk []byte, eos bool) 
 	ec.accumBuf = append(ec.accumBuf, chunk...)
 
 	// Check whether any ChunkBuffering policy needs more data.
+	// NeedsMoreData is only consulted on non-final chunks — when eos=true the
+	// kernel flushes unconditionally and never calls NeedsMoreData.
 	needsMore := false
 	if !eos {
 		for _, p := range ec.chain.Policies {
 			if cb, ok := p.(policy.ChunkBuffering); ok {
-				if cb.NeedsMoreData(ec.accumBuf, eos) {
+				if cb.NeedsMoreData(ec.accumBuf) {
 					needsMore = true
 					break
 				}

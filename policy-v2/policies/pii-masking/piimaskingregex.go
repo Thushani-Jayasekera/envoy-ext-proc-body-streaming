@@ -99,24 +99,25 @@ type PIIMaskingRegexPolicy struct {
 //
 // The framework ALWAYS flushes unconditionally when eos=true, regardless of this
 // method's return value.
-func (p *PIIMaskingRegexPolicy) NeedsMoreData(accumulated []byte, eos bool) bool {
-	// Flush on SSE event boundary OR hold until eos (covers plain JSON in chunks).
-	return policy.NeedsMoreDataSSE(accumulated, eos)
+func (p *PIIMaskingRegexPolicy) NeedsMoreData(accumulated []byte) bool {
+	// Flush on SSE event boundary (\n\n). For plain JSON (no \n\n), this holds
+	// every chunk until the kernel's unconditional eos flush delivers the full body.
+	return policy.NeedsMoreDataSSE(accumulated)
 
 	// ── Alternative strategies shown here for reference ─────────────────────────
 	//
 	// Wait for a newline delimiter (NDJSON / newline-delimited streams):
-	//   return policy.NeedsMoreDataDelimiter(accumulated, eos, '\n')
+	//   return policy.NeedsMoreDataDelimiter(accumulated, '\n')
 	//
 	// Wait for a minimum token budget before processing (e.g. 50 tokens):
-	//   return policy.NeedsMoreDataTokenBudget(accumulated, eos, 50, countTokens)
+	//   return policy.NeedsMoreDataTokenBudget(accumulated, 50, countTokens)
 	//
 	// Custom keyword trigger — hold until a specific marker appears (demo only):
 	//   return !bytes.Contains(accumulated, []byte("attack"))
 	//
 	// Compose multiple conditions (hold until ALL are false — AND logic):
-	//   return policy.NeedsMoreDataTokenBudget(accumulated, eos, 7, countTokens) ||
-	//       policy.NeedsMoreDataDelimiter(accumulated, eos, '.') ||
+	//   return policy.NeedsMoreDataTokenBudget(accumulated, 7, countTokens) ||
+	//       policy.NeedsMoreDataDelimiter(accumulated, '.') ||
 	//       !bytes.Contains(accumulated, []byte("attack"))
 }
 
